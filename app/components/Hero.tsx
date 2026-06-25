@@ -1,6 +1,6 @@
 import React from "react";
 
-const Hero = (): JSX.Element => {
+const Hero = ()  => {
   return (
     <div className="bg-blue-400">
       <div className="container mx-auto">
