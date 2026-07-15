@@ -14,29 +14,34 @@ type Resume = {
 };
 
 export default function ResumePage() {
-  const [file, setFile] = useState<File | null>(null);
+  const [resumeText, setResumeText] = useState("");
   const [resume, setResume] = useState<Resume | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    if (!file) {
-      setError("Please choose a resume file first.");
+    const trimmedResumeText = resumeText.trim();
+
+    if (!trimmedResumeText) {
+      setError("Please paste your resume text first.");
       return;
     }
 
     setLoading(true);
     setError("");
+    setResume(null);
 
     try {
-      const formData = new FormData();
-      formData.append("resume", file);
-
       const res = await fetch("/api/resume", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          resumeText: trimmedResumeText,
+        }),
       });
 
       const data = await res.json();
@@ -47,9 +52,9 @@ export default function ResumePage() {
       }
 
       setResume(data.resume);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to upload resume.");
+    } catch (error) {
+      console.error(error);
+      setError("Failed to parse resume.");
     } finally {
       setLoading(false);
     }
@@ -60,30 +65,36 @@ export default function ResumePage() {
       <h1 className="text-3xl font-bold">Resume</h1>
 
       <p className="mt-2 text-gray-600">
-        Upload your resume so JobSnap can extract your skills and compare them
-        against job ads.
+        Paste your resume so JobSnap can extract your skills and compare them
+        against job advertisements.
       </p>
 
       <section className="mt-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold">Upload Resume</h2>
+        <h2 className="text-xl font-semibold">Paste Resume</h2>
 
-        <form onSubmit={handleUpload} className="mt-6 space-y-4">
-          <input
-            type="file"
-            accept=".pdf,.docx"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className="block w-full rounded-lg border border-gray-300 p-3"
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <textarea
+            value={resumeText}
+            onChange={(e) => setResumeText(e.target.value)}
+            placeholder="Paste your full resume here..."
+            className="min-h-[400px] w-full rounded-lg border border-gray-300 p-4 leading-7 outline-none focus:border-black focus:ring-1 focus:ring-black"
           />
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-gray-500">
+              {resumeText.length.toLocaleString()} characters
+            </p>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded-lg bg-black px-5 py-3 font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? "Parsing Resume..." : "Upload & Parse Resume"}
-          </button>
+            <button
+              type="submit"
+              disabled={loading || !resumeText.trim()}
+              className="rounded-lg bg-black px-5 py-3 font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Parsing Resume..." : "Parse Resume"}
+            </button>
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
         </form>
       </section>
 
@@ -93,14 +104,17 @@ export default function ResumePage() {
 
           <div className="mt-4 space-y-2 text-gray-700">
             <p>
-              <strong>Name:</strong> {resume.name}
+              <strong>Name:</strong> {resume.name || "Not found"}
             </p>
+
             <p>
               <strong>Email:</strong> {resume.email || "Not found"}
             </p>
+
             <p>
               <strong>Phone:</strong> {resume.phone || "Not found"}
             </p>
+
             <p>
               <strong>Location:</strong> {resume.location || "Not found"}
             </p>
@@ -108,42 +122,57 @@ export default function ResumePage() {
 
           <div className="mt-6">
             <h3 className="font-semibold">Summary</h3>
-            <p className="mt-2 text-gray-700">{resume.summary}</p>
+
+            <p className="mt-2 text-gray-700">
+              {resume.summary || "No summary generated."}
+            </p>
           </div>
 
           <div className="mt-6">
             <h3 className="font-semibold">Skills</h3>
 
-            <div className="mt-3 flex flex-wrap gap-2">
-              {resume.skills.map((skill) => (
-                <span
-                  key={skill}
-                  className="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700"
-                >
-                  {skill}
-                </span>
-              ))}
-            </div>
+            {resume.skills.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {resume.skills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700"
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-gray-500">No skills found.</p>
+            )}
           </div>
 
           <div className="mt-6">
             <h3 className="font-semibold">Experience</h3>
 
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-700">
-              {resume.experience.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ul>
+            {resume.experience.length > 0 ? (
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-700">
+                {resume.experience.map((item, index) => (
+                  <li key={`${item}-${index}`}>{item}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-gray-500">No experience found.</p>
+            )}
           </div>
 
           <div className="mt-6">
             <h3 className="font-semibold">Education</h3>
 
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-700">
-              {resume.education.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ul>
+            {resume.education.length > 0 ? (
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-700">
+                {resume.education.map((item, index) => (
+                  <li key={`${item}-${index}`}>{item}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-gray-500">No education found.</p>
+            )}
           </div>
         </section>
       )}

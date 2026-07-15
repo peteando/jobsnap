@@ -1,6 +1,6 @@
 import JobCard from "./Jobcard";
 import { db } from "@/db";
-import { jobs } from "@/db/schema";
+import { jobs } from "../../db/jobs";
 
 export default async function Jobs() {
   const allJobs = await db.select().from(jobs);

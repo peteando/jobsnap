@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { jobs } from "@/db/schema";
+import { jobs } from "@/db/jobs";
 
 export async function GET() {
   try {

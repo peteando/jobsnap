@@ -157,7 +157,7 @@ export default function Header() {
           </Link>
 
           <Link href="/resume" className="hover:text-blue-600">
-            resume
+            Resume
           </Link>
         </nav>
       </div>
