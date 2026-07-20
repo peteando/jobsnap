@@ -1,205 +1,183 @@
+import { NextRequest, NextResponse } from "next/server";
+import { eq } from "drizzle-orm";
 import OpenAI from "openai";
-import { desc, eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { jobs } from "@/db/jobs";
-import { resumes } from "@/db/resumes";
-import { matches } from "@/db/matches";
+import {
+  matches,
+  type MatchRecommendation,
+  type MatchResult,
+} from "@/db/matches";
 
-const client = new OpenAI({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-type MatchRecommendation =
-  | "strong_match"
-  | "good_match"
-  | "possible_match"
-  | "weak_match";
-
-type MatchResult = {
-  matchScore: number;
-  recommendation: MatchRecommendation;
-
-  summary: string;
-
-  matchedSkills: string[];
-  missingRequiredSkills: string[];
-  missingPreferredSkills: string[];
-  transferableSkills: string[];
-
-  experienceMatches: string[];
-  experienceGaps: string[];
-
-  qualificationMatches: string[];
-  qualificationGaps: string[];
-
-  strengths: string[];
-  weaknesses: string[];
-
-  resumeKeywordsPresent: string[];
-  resumeKeywordsMissing: string[];
-
-  suggestedResumeChanges: string[];
-  suggestedBulletPoints: string[];
-
-  coverLetterFocus: string[];
-
-  interviewPreparation: {
-    likelyQuestions: string[];
-    topicsToReview: string[];
-    examplesToPrepare: string[];
-  };
-
-  scoreBreakdown: {
-    requiredSkills: number;
-    preferredSkills: number;
-    experience: number;
-    qualifications: number;
-    responsibilities: number;
-  };
+type RouteContext = {
+  params: Promise<{
+    id: string;
+  }>;
 };
 
-function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.every((item) => typeof item === "string")
+type MatchRequestBody = {
+  resumeText?: string;
+};
+
+function getStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" && item.trim().length > 0,
   );
 }
 
-function isScore(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0 &&
-    value <= 100
-  );
+function getScore(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function isRecommendation(
-  value: unknown,
-): value is MatchRecommendation {
-  return (
-    value === "strong_match" ||
-    value === "good_match" ||
-    value === "possible_match" ||
-    value === "weak_match"
-  );
+function getRecommendation(value: unknown): MatchRecommendation {
+  const validRecommendations: MatchRecommendation[] = [
+    "strong_match",
+    "good_match",
+    "possible_match",
+    "weak_match",
+  ];
+
+  if (
+    typeof value === "string" &&
+    validRecommendations.includes(value as MatchRecommendation)
+  ) {
+    return value as MatchRecommendation;
+  }
+
+  return "weak_match";
 }
 
-function isMatchResult(value: unknown): value is MatchResult {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const result = value as Record<string, unknown>;
-
+function getObject(value: unknown): Record<string, unknown> {
   if (
-    !isScore(result.matchScore) ||
-    !isRecommendation(result.recommendation) ||
-    typeof result.summary !== "string"
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
   ) {
-    return false;
+    return value as Record<string, unknown>;
   }
 
-  const stringArrayFields = [
-    "matchedSkills",
-    "missingRequiredSkills",
-    "missingPreferredSkills",
-    "transferableSkills",
-    "experienceMatches",
-    "experienceGaps",
-    "qualificationMatches",
-    "qualificationGaps",
-    "strengths",
-    "weaknesses",
-    "resumeKeywordsPresent",
-    "resumeKeywordsMissing",
-    "suggestedResumeChanges",
-    "suggestedBulletPoints",
-    "coverLetterFocus",
-  ] as const;
-
-  for (const field of stringArrayFields) {
-    if (!isStringArray(result[field])) {
-      return false;
-    }
-  }
-
-  if (
-    typeof result.interviewPreparation !== "object" ||
-    result.interviewPreparation === null
-  ) {
-    return false;
-  }
-
-  const interviewPreparation =
-    result.interviewPreparation as Record<string, unknown>;
-
-  if (
-    !isStringArray(interviewPreparation.likelyQuestions) ||
-    !isStringArray(interviewPreparation.topicsToReview) ||
-    !isStringArray(interviewPreparation.examplesToPrepare)
-  ) {
-    return false;
-  }
-
-  if (
-    typeof result.scoreBreakdown !== "object" ||
-    result.scoreBreakdown === null
-  ) {
-    return false;
-  }
-
-  const scoreBreakdown =
-    result.scoreBreakdown as Record<string, unknown>;
-
-  if (
-    !isScore(scoreBreakdown.requiredSkills) ||
-    !isScore(scoreBreakdown.preferredSkills) ||
-    !isScore(scoreBreakdown.experience) ||
-    !isScore(scoreBreakdown.qualifications) ||
-    !isScore(scoreBreakdown.responsibilities)
-  ) {
-    return false;
-  }
-
-  return true;
+  return {};
 }
 
-function formatList(items: string[] | null | undefined) {
-  if (!items || items.length === 0) {
-    return "None provided";
-  }
+function normaliseMatchResult(value: unknown): MatchResult {
+  const result = getObject(value);
+  const interviewPreparation = getObject(result.interviewPreparation);
+  const scoreBreakdown = getObject(result.scoreBreakdown);
 
-  return items.map((item) => `- ${item}`).join("\n");
+  const matchScore = getScore(result.matchScore);
+
+  return {
+    matchScore,
+    recommendation: getRecommendation(result.recommendation),
+
+    summary:
+      typeof result.summary === "string"
+        ? result.summary
+        : "No match summary was generated.",
+
+    matchedSkills: getStringArray(result.matchedSkills),
+    missingRequiredSkills: getStringArray(
+      result.missingRequiredSkills,
+    ),
+    missingPreferredSkills: getStringArray(
+      result.missingPreferredSkills,
+    ),
+    transferableSkills: getStringArray(result.transferableSkills),
+
+    experienceMatches: getStringArray(result.experienceMatches),
+    experienceGaps: getStringArray(result.experienceGaps),
+
+    qualificationMatches: getStringArray(
+      result.qualificationMatches,
+    ),
+    qualificationGaps: getStringArray(result.qualificationGaps),
+
+    strengths: getStringArray(result.strengths),
+    weaknesses: getStringArray(result.weaknesses),
+
+    resumeKeywordsPresent: getStringArray(
+      result.resumeKeywordsPresent,
+    ),
+    resumeKeywordsMissing: getStringArray(
+      result.resumeKeywordsMissing,
+    ),
+
+    suggestedResumeChanges: getStringArray(
+      result.suggestedResumeChanges,
+    ),
+    suggestedBulletPoints: getStringArray(
+      result.suggestedBulletPoints,
+    ),
+
+    coverLetterFocus: getStringArray(result.coverLetterFocus),
+
+    interviewPreparation: {
+      likelyQuestions: getStringArray(
+        interviewPreparation.likelyQuestions,
+      ),
+      topicsToReview: getStringArray(
+        interviewPreparation.topicsToReview,
+      ),
+      examplesToPrepare: getStringArray(
+        interviewPreparation.examplesToPrepare,
+      ),
+    },
+
+    scoreBreakdown: {
+      requiredSkills: getScore(scoreBreakdown.requiredSkills),
+      preferredSkills: getScore(scoreBreakdown.preferredSkills),
+      experience: getScore(scoreBreakdown.experience),
+      qualifications: getScore(scoreBreakdown.qualifications),
+      responsibilities: getScore(scoreBreakdown.responsibilities),
+      keywordAlignment: getScore(scoreBreakdown.keywordAlignment),
+    },
+  };
 }
 
 export async function POST(
-  _request: Request,
-  context: {
-    params: Promise<{ id: string }>;
-  },
+  request: NextRequest,
+  context: RouteContext,
 ) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return Response.json(
-        {
-          error:
-            "OPENAI_API_KEY is missing from your environment variables.",
-        },
-        { status: 500 },
-      );
-    }
-
     const { id } = await context.params;
     const jobId = Number(id);
 
     if (!Number.isInteger(jobId) || jobId <= 0) {
-      return Response.json(
+      return NextResponse.json(
         {
-          error: "A valid job ID must be provided.",
+          error: "Invalid job ID.",
         },
-        { status: 400 },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    const body = (await request.json()) as MatchRequestBody;
+    const resumeText = body.resumeText?.trim();
+
+    if (!resumeText) {
+      return NextResponse.json(
+        {
+          error: "Resume text is required.",
+        },
+        {
+          status: 400,
+        },
       );
     }
 
@@ -210,159 +188,141 @@ export async function POST(
       .limit(1);
 
     if (!job) {
-      return Response.json(
+      return NextResponse.json(
         {
           error: "Job not found.",
         },
-        { status: 404 },
-      );
-    }
-
-    const [resume] = await db
-      .select()
-      .from(resumes)
-      .orderBy(desc(resumes.createdAt))
-      .limit(1);
-
-    if (!resume) {
-      return Response.json(
         {
-          error:
-            "No saved resume was found. Upload or save a resume first.",
+          status: 404,
         },
-        { status: 404 },
       );
     }
 
-    const resumeText = resume.rawText.trim();
+    const jobInformation = {
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      salary: job.salary,
 
-    if (!resumeText) {
-      return Response.json(
+      employmentType:
+        "employmentType" in job ? job.employmentType : null,
+
+      seniorityLevel:
+        "seniorityLevel" in job ? job.seniorityLevel : null,
+
+      description:
+        "description" in job ? job.description : null,
+
+      rawJobAd:
+        "rawJobAd" in job ? job.rawJobAd : null,
+
+      requiredSkills:
+        "requiredSkills" in job ? job.requiredSkills : [],
+
+      preferredSkills:
+        "preferredSkills" in job ? job.preferredSkills : [],
+
+      responsibilities:
+        "responsibilities" in job ? job.responsibilities : [],
+
+      qualifications:
+        "qualifications" in job ? job.qualifications : [],
+    };
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+
+      response_format: {
+        type: "json_object",
+      },
+
+      messages: [
         {
-          error: "The saved resume does not contain any text.",
-        },
-        { status: 400 },
-      );
-    }
+          role: "system",
+          content: `
+You are an expert technical recruiter and resume analyst.
 
-    const jobInformation = `
-JOB TITLE:
-${job.title}
+Compare the supplied resume with the supplied job advertisement.
 
-COMPANY:
-${job.company || "Not provided"}
+Be honest and specific. Do not invent experience, skills, qualifications,
+employment history, achievements, or technologies that are not present in
+the resume.
 
-LOCATION:
-${job.location || "Not provided"}
+All scoring fields must be integers from 0 to 100.
 
-SALARY:
-${job.salary || "Not provided"}
+The recommendation must be exactly one of:
 
-EMPLOYMENT TYPE:
-${job.employmentType || "Not provided"}
+- strong_match
+- good_match
+- possible_match
+- weak_match
 
-SENIORITY LEVEL:
-${job.seniorityLevel || "Not provided"}
-
-JOB DESCRIPTION:
-${job.description || "Not provided"}
-
-REQUIRED SKILLS:
-${formatList(job.requiredSkills)}
-
-PREFERRED SKILLS:
-${formatList(job.preferredSkills)}
-
-RESPONSIBILITIES:
-${formatList(job.responsibilities)}
-
-QUALIFICATIONS:
-${formatList(job.qualifications)}
-`.trim();
-
-    const prompt = `
-You are an experienced technical recruiter and career adviser.
-
-Compare the candidate's resume against the supplied job advertisement.
-
-Be accurate, practical and evidence-based.
-
-Rules:
-
-1. Do not claim the candidate has a skill or experience unless it is supported by the resume.
-2. Clearly distinguish direct matches from transferable skills.
-3. Missing skills must be based on genuine job requirements.
-4. Match scores and score breakdown values must be integers between 0 and 100.
-5. Suggested resume bullet points must not invent experience, achievements or qualifications.
-6. Return valid JSON only.
-7. Do not include Markdown or code fences.
-
-Return exactly this JSON structure:
+Return valid JSON only, using exactly this structure:
 
 {
   "matchScore": 0,
-  "recommendation": "strong_match",
+  "recommendation": "weak_match",
   "summary": "",
+
   "matchedSkills": [],
   "missingRequiredSkills": [],
   "missingPreferredSkills": [],
   "transferableSkills": [],
+
   "experienceMatches": [],
   "experienceGaps": [],
+
   "qualificationMatches": [],
   "qualificationGaps": [],
+
   "strengths": [],
   "weaknesses": [],
+
   "resumeKeywordsPresent": [],
   "resumeKeywordsMissing": [],
+
   "suggestedResumeChanges": [],
   "suggestedBulletPoints": [],
+
   "coverLetterFocus": [],
+
   "interviewPreparation": {
     "likelyQuestions": [],
     "topicsToReview": [],
     "examplesToPrepare": []
   },
+
   "scoreBreakdown": {
     "requiredSkills": 0,
     "preferredSkills": 0,
     "experience": 0,
     "qualifications": 0,
-    "responsibilities": 0
+    "responsibilities": 0,
+    "keywordAlignment": 0
   }
 }
 
-Recommendation rules:
+The suggested bullet points must not fabricate achievements.
 
-- strong_match: score 85 to 100
-- good_match: score 70 to 84
-- possible_match: score 50 to 69
-- weak_match: score below 50
+They may recommend truthful ways to describe experience already evident
+in the resume, or provide templates containing placeholders such as
+"[add measurable result]".
 
-JOB ADVERTISEMENT:
-
-${jobInformation}
-
-CANDIDATE RESUME:
-
-${resumeText}
-`.trim();
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      temperature: 0.2,
-      response_format: {
-        type: "json_object",
-      },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You compare resumes with job advertisements and return valid JSON only.",
+keywordAlignment measures how closely the language and terminology in the
+resume align with the important words and phrases in the job advertisement.
+          `.trim(),
         },
         {
           role: "user",
-          content: prompt,
+          content: `
+JOB ADVERTISEMENT
+
+${JSON.stringify(jobInformation, null, 2)}
+
+RESUME
+
+${resumeText}
+          `.trim(),
         },
       ],
     });
@@ -371,47 +331,35 @@ ${resumeText}
       completion.choices[0]?.message?.content;
 
     if (!responseContent) {
-      return Response.json(
+      return NextResponse.json(
         {
-          error: "OpenAI did not return a match result.",
+          error: "The AI did not return a match result.",
         },
-        { status: 502 },
+        {
+          status: 502,
+        },
       );
     }
 
-    let parsedResult: unknown;
+    let rawResult: unknown;
 
     try {
-      parsedResult = JSON.parse(responseContent);
+      rawResult = JSON.parse(responseContent);
     } catch (error) {
-      console.error(
-        "Unable to parse OpenAI response:",
-        responseContent,
-        error,
-      );
+      console.error("Could not parse AI response:", error);
+      console.error("AI response:", responseContent);
 
-      return Response.json(
+      return NextResponse.json(
         {
-          error: "OpenAI returned invalid JSON.",
+          error: "The AI returned invalid JSON.",
         },
-        { status: 502 },
+        {
+          status: 502,
+        },
       );
     }
 
-    if (!isMatchResult(parsedResult)) {
-      console.error(
-        "OpenAI returned an invalid match result:",
-        parsedResult,
-      );
-
-      return Response.json(
-        {
-          error:
-            "OpenAI returned an incomplete or invalid match result.",
-        },
-        { status: 502 },
-      );
-    }
+    const parsedResult = normaliseMatchResult(rawResult);
 
     const [savedMatch] = await db
       .insert(matches)
@@ -421,30 +369,28 @@ ${resumeText}
         matchScore: parsedResult.matchScore,
         recommendation: parsedResult.recommendation,
         result: parsedResult,
+        updatedAt: new Date(),
       })
       .returning();
 
-    return Response.json(
-      {
-        success: true,
-        matchId: savedMatch.id,
-        result: parsedResult,
-      },
-      { status: 201 },
-    );
+    return NextResponse.json({
+      success: true,
+      match: savedMatch,
+      result: parsedResult,
+    });
   } catch (error) {
-    console.error("Match route error:", error);
+    console.error("Error analysing job match:", error);
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : "An unknown matching error occurred.";
-
-    return Response.json(
+    return NextResponse.json(
       {
-        error: message,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to analyse the job match.",
       },
-      { status: 500 },
+      {
+        status: 500,
+      },
     );
   }
 }
